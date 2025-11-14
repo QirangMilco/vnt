@@ -14,6 +14,11 @@ mod android;
 #[cfg(target_os = "android")]
 pub use android::Device;
 
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+pub use ios::Device;
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

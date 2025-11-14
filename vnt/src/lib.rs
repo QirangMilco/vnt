@@ -16,6 +16,10 @@ mod tun_tap_device;
 pub use tun_tap_device::*;
 pub mod util;
 
+// 导出FFI接口
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 pub use handle::callback::*;
 
 pub mod compression;

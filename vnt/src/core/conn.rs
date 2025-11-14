@@ -51,6 +51,17 @@ impl Vnt {
         let inner = Arc::new(VntInner::new_device(config, callback, device)?);
         Ok(Self { inner })
     }
+    
+    // 为iOS平台FFI提供的构造函数，允许传入自定义的DeviceWrite实现
+    #[cfg(feature = "ffi")]
+    pub fn new_with_device_write<Call: VntCallback, Device: DeviceWrite>(
+        config: Config,
+        callback: Call,
+        device: Device,
+    ) -> anyhow::Result<Self> {
+        let inner = Arc::new(VntInner::new_device0(config, callback, device)?);
+        Ok(Self { inner })
+    }
 }
 
 impl Deref for Vnt {
