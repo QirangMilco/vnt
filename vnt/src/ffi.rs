@@ -3,10 +3,14 @@ use std::ptr;
 use std::str;
 use std::sync::{Arc, Mutex};
 use lazy_static::lazy_static;
+use log;
 use crate::core::{conn::Vnt, Config};
 use crate::VntCallback;
 use crate::tun::DeviceWrite;
 use crate::handle::callback::{ConnectInfo, ErrorInfo, ErrorType, HandshakeInfo, PeerClientInfo, RegisterInfo};
+// 导入iOS设备的INBOUND_SENDER
+#[cfg(target_os = "ios")]
+use crate::tun::ios::device::INBOUND_SENDER;
 
 // 定义数据包发送回调类型
 type PacketSendCallback = unsafe extern "C" fn(*const u8, c_int);
@@ -223,20 +227,38 @@ pub unsafe extern "C" fn vnt_destroy(vnt_ptr: *mut c_void) {
 /// 发送IP数据包
 #[no_mangle]
 pub unsafe extern "C" fn vnt_send_ip(vnt_ptr: *mut c_void, data: *const u8, len: c_int) -> bool {
-    if vnt_ptr.is_null() || data.is_null() || len <= 0 {
+    if data.is_null() || len <= 0 {
         return false;
     }
 
-    let vnt = &*(vnt_ptr as *mut Vnt);
-    if let Some(sender) = vnt.ipv4_packet_sender() {
-        let slice = std::slice::from_raw_parts(data, len as usize);
-        match sender.send_ipv4(slice) {
-            Ok(_) => true,
-            Err(_) => false,
+    #[cfg(target_os = "ios")]
+    {
+        // 在iOS平台上，使用INBOUND_SENDER将数据发送到Device的channel
+        if let Some(sender) = INBOUND_SENDER.lock().unwrap().as_ref() {
+            let slice = std::slice::from_raw_parts(data, len as usize);
+            match sender.send(slice.to_vec()) {
+                Ok(_) => return true,
+                Err(e) => {
+                    log::error!("Failed to send packet to channel: {:?}", e);
+                    return false;
+                }
+            }
         }
-    } else {
-        false
     }
+
+    // 非iOS平台或iOS平台上channel未初始化时，使用传统方式
+    if !vnt_ptr.is_null() {
+        let vnt = &*(vnt_ptr as *mut Vnt);
+        if let Some(sender) = vnt.ipv4_packet_sender() {
+            let slice = std::slice::from_raw_parts(data, len as usize);
+            match sender.send_ipv4(slice) {
+                Ok(_) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+    
+    false
 }
 
 /// 等待VNT完成
