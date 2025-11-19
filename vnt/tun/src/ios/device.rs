@@ -1,6 +1,5 @@
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use lazy_static::lazy_static;
 
