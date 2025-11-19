@@ -11,10 +11,10 @@ lazy_static! {
     pub static ref INBOUND_SENDER: Mutex<Option<Sender<Vec<u8>>>> = Mutex::new(None);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Device {
     receiver: Receiver<Vec<u8>>, // 用于接收来自 Swift 的数据包
-    buffer: Vec<u8>,             // 内部缓存，处理 read buf 小于包长的情况
+    buffer: Mutex<Vec<u8>>,      // 使用 Mutex 保护 buffer，确保线程安全
 }
 
 impl Device {
@@ -27,7 +27,7 @@ impl Device {
 
         Ok(Self {
             receiver: rx,
-            buffer: Vec::new(),
+            buffer: Mutex::new(Vec::new()),
         })
     }
 }
@@ -67,10 +67,38 @@ impl IFace for Device {
     }
     
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        // 由于IFace的read方法是不可变引用，但我们需要修改内部状态，这里需要一些unsafe操作
-        // 在实际使用中，Device实例应该只在一个线程中使用
-        let device = unsafe { &mut *(self as *const Self as *mut Self) };
-        device.read_internal(buf)
+        // 1. 获取锁
+        let mut internal_buffer = self.buffer.lock().map_err(|_| {
+            io::Error::new(io::ErrorKind::Other, "Mutex poisoned")
+        })?;
+
+        // 2. 先读缓存
+        if !internal_buffer.is_empty() {
+            let len = std::cmp::min(buf.len(), internal_buffer.len());
+            buf[..len].copy_from_slice(&internal_buffer[..len]);
+            internal_buffer.drain(..len);
+            return Ok(len);
+        }
+
+        // 3. 释放锁等待 Channel (关键！不要拿着锁去 wait channel，否则可能死锁)
+        drop(internal_buffer);
+
+        // 4. 阻塞接收
+        match self.receiver.recv() {
+            Ok(packet) => {
+                // 再次获取锁来处理数据
+                let mut internal_buffer = self.buffer.lock().unwrap();
+                
+                let len = std::cmp::min(buf.len(), packet.len());
+                buf[..len].copy_from_slice(&packet[..len]);
+                
+                if len < packet.len() {
+                    internal_buffer.extend_from_slice(&packet[len..]);
+                }
+                Ok(len)
+            },
+            Err(_) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "Channel closed")),
+        }
     }
     
     fn write(&self, buf: &[u8]) -> io::Result<usize> {
@@ -83,37 +111,12 @@ impl IFace for Device {
     }
 }
 
-impl Device {
-    fn read_internal(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // 1. 如果内部缓存有数据，先发缓存的
-        if !self.buffer.is_empty() {
-            let len = std::cmp::min(buf.len(), self.buffer.len());
-            buf[..len].copy_from_slice(&self.buffer[..len]);
-            // 移除已读取部分
-            self.buffer.drain(..len);
-            return Ok(len);
-        }
 
-        // 2. 阻塞等待 Swift 推送数据过来
-        match self.receiver.recv() {
-            Ok(packet) => {
-                let len = std::cmp::min(buf.len(), packet.len());
-                buf[..len].copy_from_slice(&packet[..len]);
-                
-                // 如果 buf 放不下整个包，剩余的存入缓存
-                if len < packet.len() {
-                    self.buffer.extend_from_slice(&packet[len..]);
-                }
-                Ok(len)
-            },
-            Err(_) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "Channel closed")),
-        }
-    }
-}
 
 impl Read for Device {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read_internal(buf)
+        // 直接调用 IFace 的 read，它现在是线程安全的
+        IFace::read(self, buf)
     }
 }
 

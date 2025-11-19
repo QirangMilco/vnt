@@ -236,10 +236,16 @@ pub unsafe extern "C" fn vnt_send_ip(vnt_ptr: *mut c_void, data: *const u8, len:
         // 在iOS平台上，使用INBOUND_SENDER将数据发送到Device的channel
         if let Some(sender) = INBOUND_SENDER.lock().unwrap().as_ref() {
             let slice = std::slice::from_raw_parts(data, len as usize);
-            match sender.send(slice.to_vec()) {
+            // 使用 try_send 替代 send，确保非阻塞
+            match sender.try_send(slice.to_vec()) {
                 Ok(_) => return true,
+                Err(crossbeam_channel::TrySendError::Full(_)) => {
+                    // 通道已满，主动丢包，防止阻塞 Swift 线程
+                    log::warn!("VNT Channel full, dropping packet!");
+                    return true; // 返回 true 欺骗 Swift 以为发送成功，避免 Swift层报错
+                }
                 Err(e) => {
-                    log::error!("Failed to send packet to channel: {:?}", e);
+                    log::error!("Failed to send packet: {:?}", e);
                     return false;
                 }
             }
